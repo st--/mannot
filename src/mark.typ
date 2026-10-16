@@ -98,6 +98,47 @@
 }
 
 
+/// The attachment element (`math.attach`) that `body` consists of, unwrapping an
+/// equation and a sequence with a single child; `none` if `body` is not a single
+/// term with sub-/superscripts.
+#let _get-attach(body) = {
+  if type(body) != content { return none }
+  if body.func() == math.equation { return _get-attach(body.body) }
+  if body.func() == _sequence-func {
+    let children = body.children.filter(c => c != [ ])
+    return if children.len() == 1 { _get-attach(children.first()) } else { none }
+  }
+  if body.func() == math.attach { body } else { none }
+}
+
+/// A zero-width probe for the width of `base` at the current math size: a
+/// hidden copy of `base` between two markers, followed by a negative space of
+/// the same width (taken from the markers' positions). As an ordinary symbol
+/// of zero width, it does not change the surrounding spacing.
+#let _width-probe(base, start-lab, end-lab, begin-loc) = math.class("normal", {
+  [#metadata(none)#start-lab]
+  hide(base)
+  [#metadata(none)#end-lab]
+  context {
+    let start = query(selector(start-lab).after(begin-loc).before(here()))
+    let end = query(selector(end-lab).after(begin-loc).before(here()))
+    if start.len() > 0 and end.len() > 0 {
+      // (rounded: the positions change slightly between layout iterations,
+      // e.g. in centred equations, which would keep the width from settling)
+      let width = end.last().location().position().x - start.last().location().position().x
+      h(-calc.round(width.pt(), digits: 3) * 1pt)
+    }
+  }
+})
+
+/// `term` (a `math.attach` element) with `func` applied to its base only.
+#let _map-base(term, func) = {
+  let fields = term.fields()
+  let base = fields.remove("base")
+  math.attach(func(base), ..fields)
+}
+
+
 /// Marks content within a math block with a custom underlay or overlay.
 ///
 /// This function measures the position and size of the marked content,
@@ -158,6 +199,14 @@
   /// or as a `dictionary` of `length` with keys `left`, `right`, `top`, `bottom`, `x`, `y`, or `rest`.
   /// -> none | length | dictionary
   anchor-inset: (:),
+  /// If the marked content is a single term with sub-/superscripts, e.g. `f_i`,
+  /// mark only its base: the term is laid out unchanged (so the attachments are
+  /// placed as without the mark), but the marking box ends at the right edge of
+  /// the base. Vertically it still spans the whole term.
+  /// Marking only the base as `mark(f)_i` instead would change the placement of
+  /// the attachments, since they are then attached to the marked content.
+  /// -> bool
+  base-only: false,
   /// Whether to render visual markers for debugging purposes.
   /// -> bool
   debug: false,
@@ -229,6 +278,15 @@
     )
     place([#none#dy-lab])
 
+    // With `base-only`, measure the width of the base of a term with
+    // attachments (laid out unchanged above) with a zero-width probe.
+    let base-start-lab = label("_mannot-mark-base-start")
+    let base-end-lab = label("_mannot-mark-base-end")
+    let term = if base-only { _get-attach(body) }
+    if term != none {
+      _width-probe(term.base, base-start-lab, base-end-lab, begin-loc)
+    }
+
     // Measure the position and size, expose metadata and place the overlay.
     context {
       let end-loc = here()
@@ -273,6 +331,13 @@
 
       let left-x = begin-loc.position().x
       let right-x = end-pos.x
+      if term != none {
+        let start = query(selector(base-start-lab).after(begin-loc).before(end-loc))
+        let end = query(selector(base-end-lab).after(begin-loc).before(end-loc))
+        if start.len() > 0 and end.len() > 0 {
+          right-x = left-x + end.last().location().position().x - start.last().location().position().x
+        }
+      }
 
       let mark-outset = coerce-outset(mark-outset)
       let mark-bounds = (
@@ -390,18 +455,26 @@
   /// or as a `dictionary` of `length` with keys `left`, `right`, `top`, `bottom`, `x`, `y`, or `rest`.
   /// -> none | length | dictionary
   outset: (y: .1em),
+  /// Mark only the base of a term with sub-/superscripts, e.g. `f_i`;
+  /// see `core-mark`.
+  /// -> bool
+  base-only: false,
   ..args,
 ) = {
   (body, tag, color) = _coerce-args(args, body, tag, color)
 
   if color != auto {
+    let term = if base-only { _get-attach(body) }
+    if term != none {
+      return core-mark(_map-base(term, b => text(fill: color, b)), tag: tag, color: color, base-only: base-only, mark-outset: outset)
+    }
     return {
       set text(fill: color)
-      core-mark(body, tag: tag, color: color, mark-outset: outset)
+      core-mark(body, tag: tag, color: color, base-only: base-only, mark-outset: outset)
     }
   } else {
     return {
-      core-mark(body, tag: tag, color: color, mark-outset: outset)
+      core-mark(body, tag: tag, color: color, base-only: base-only, mark-outset: outset)
     }
   }
 }
@@ -462,6 +535,10 @@
   /// or as a `dictionary` of `length` with keys `left`, `right`, `top`, `bottom`, `x`, `y`, or `rest`.
   /// -> none | length | dictionary
   outset: (y: .1em),
+  /// Mark only the base of a term with sub-/superscripts, e.g. `f_i`;
+  /// see `core-mark`.
+  /// -> bool
+  base-only: false,
   ..args,
 ) = {
   (body, tag, color) = _coerce-args(args, body, tag, color)
@@ -488,7 +565,7 @@
     }
   }
 
-  return core-mark(body, tag: tag, color: color, underlay: underlay, mark-outset: outset)
+  return core-mark(body, tag: tag, color: color, base-only: base-only, underlay: underlay, mark-outset: outset)
 }
 
 
@@ -545,6 +622,10 @@
   /// or as a `dictionary` of `length` with keys `left`, `right`, `top`, `bottom`, `x`, `y`, or `rest`.
   /// -> none | length | dictionary
   outset: (y: .1em),
+  /// Mark only the base of a term with sub-/superscripts, e.g. `f_i`;
+  /// see `core-mark`.
+  /// -> bool
+  base-only: false,
   ..args,
 ) = {
   (body, tag, color) = _coerce-args(args, body, tag, color)
@@ -589,7 +670,7 @@
     }
   }
 
-  return core-mark(body, tag: tag, color: color, underlay: underlay, mark-outset: outset, anchor-inset: anchor-inset)
+  return core-mark(body, tag: tag, color: color, base-only: base-only, underlay: underlay, mark-outset: outset, anchor-inset: anchor-inset)
 }
 
 
@@ -640,6 +721,10 @@
   /// or as a `dictionary` of `length` with keys `left`, `right`, `top`, `bottom`, `x`, `y`, or `rest`.
   /// -> none | length | dictionary
   outset: (top: .1em, bottom: .144em),
+  /// Mark only the base of a term with sub-/superscripts, e.g. `f_i`;
+  /// see `core-mark`.
+  /// -> bool
+  base-only: false,
   ..args,
 ) = {
   (body, tag, color) = _coerce-args(args, body, tag, color)
@@ -657,7 +742,7 @@
     }
   }
 
-  return core-mark(body, tag: tag, color: color, overlay: overlay, mark-outset: outset, anchor-inset: anchor-inset)
+  return core-mark(body, tag: tag, color: color, base-only: base-only, overlay: overlay, mark-outset: outset, anchor-inset: anchor-inset)
 }
 
 
@@ -712,6 +797,10 @@
   /// or as a `dictionary` of `length` with keys `left`, `right`, `top`, `bottom`, `x`, `y`, or `rest`.
   /// -> none | length | dictionary
   outset: (top: .1em, bottom: .144em),
+  /// Mark only the base of a term with sub-/superscripts, e.g. `f_i`;
+  /// see `core-mark`.
+  /// -> bool
+  base-only: false,
   ..args,
 ) = {
   (body, tag, color) = _coerce-args(args, body, tag, color)
@@ -745,7 +834,7 @@
     }
   }
 
-  return core-mark(body, tag: tag, color: color, overlay: overlay, mark-outset: outset, anchor-inset: anchor-inset)
+  return core-mark(body, tag: tag, color: color, base-only: base-only, overlay: overlay, mark-outset: outset, anchor-inset: anchor-inset)
 }
 
 
@@ -797,6 +886,10 @@
   /// One of `bracket.b` (default), `brace.b`, `paren.b`, or `shell.b`.
   /// -> symbol
   bracket: sym.bracket.b,
+  /// Mark only the base of a term with sub-/superscripts, e.g. `f_i`;
+  /// see `core-mark`.
+  /// -> bool
+  base-only: false,
   ..args,
 ) = {
   (body, tag, color) = _coerce-args(args, body, tag, color)
@@ -813,6 +906,6 @@
       )
     }
 
-    return core-mark(body, tag: tag, color: color, overlay: overlay, mark-outset: outset)
+    return core-mark(body, tag: tag, color: color, base-only: base-only, overlay: overlay, mark-outset: outset)
   }
 }
